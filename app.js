@@ -21,6 +21,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // API search endpoint (FULLTEXT)
 app.get(`/api/search`, (req, res) => {
     const keyword = req.query.q || '';
+    const lat = req.query.lat || '';
+    const long = req.query.long || '';
+
     //const kabupaten = req.query.kabupaten || '';
     if (isNumber(keyword)) {
         let sql = `
@@ -29,6 +32,23 @@ app.get(`/api/search`, (req, res) => {
             WHERE idsbr = ?
             `
             ;
+        if (lat != '' && long != '') {
+            sql = `
+            SELECT idsbr,nama_usaha,alamat_usaha,nama_kabupaten,latitude,longitude,
+            (
+                6371 * ACOS(
+                COS(RADIANS(${lat})) *
+                COS(RADIANS(latitude)) *
+                COS(RADIANS(longitude) - RADIANS(${long})) +
+                SIN(RADIANS(${lat})) *
+                SIN(RADIANS(latitude))
+            )
+            ) AS distance
+            FROM prelist_search
+            WHERE idsbr = ?
+            `
+                ;
+        }
         const params = [];
         params.push(keyword);
         sql += `LIMIT 10`;
@@ -44,6 +64,23 @@ app.get(`/api/search`, (req, res) => {
             FROM prelist_search
             WHERE 1=1
         `;
+        if (lat != '' && long != '') {
+            sql = `
+            SELECT idsbr,nama_usaha,alamat_usaha,nama_kabupaten,latitude,longitude,
+            (
+                6371 * ACOS(
+                COS(RADIANS(${lat})) *
+                COS(RADIANS(latitude)) *
+                COS(RADIANS(longitude) - RADIANS(${long})) +
+                SIN(RADIANS(${lat})) *
+                SIN(RADIANS(latitude))
+            )
+            ) AS distance,
+            ${keyword ? 'MATCH(nama_usaha) AGAINST(? IN NATURAL LANGUAGE MODE) AS score' : '0 AS score'}
+            FROM prelist_search
+            WHERE 1=1
+        `;
+        }
 
         const params = [];
 
@@ -59,8 +96,14 @@ app.get(`/api/search`, (req, res) => {
         //    params.push(kabupaten);
         //}
 
+        if (lat != '' && long != '') {
+            sql += ` ORDER BY score DESC, distance ASC LIMIT 10`;
+        }else{
+            sql += ` ORDER BY score DESC LIMIT 10`;
+        }
 
-        sql += ` ORDER BY score DESC LIMIT 10`;
+
+        
 
         db.query(sql, params, (err, results) => {
             if (err) return res.status(500).json({ error: err.message });
