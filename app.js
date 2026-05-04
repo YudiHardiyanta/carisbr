@@ -97,7 +97,7 @@ app.get(`/api/search`, (req, res) => {
         //}
 
         if (lat != '' && long != '') {
-            sql += ` ORDER BY score DESC, distance ASC LIMIT 10`;
+            sql += ` ORDER BY distance ASC, score DESC LIMIT 10`;
         }else{
             sql += ` ORDER BY score DESC LIMIT 10`;
         }
