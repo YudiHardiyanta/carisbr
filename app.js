@@ -1,121 +1,128 @@
 const express = require('express');
-const mysql = require('mysql2');
+const { createClient } = require('@clickhouse/client');
 const path = require('path');
 
 const app = express();
 require('dotenv').config();
-const PORT = process.env.PORT
-const isNumber = (val) => /^[0-9]+$/.test(val);
-// MySQL connection pool
-const db = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
+
+const PORT = process.env.PORT;
+
+const client = createClient({
+    host: `http://${process.env.DB_HOST}:8123`,
+    username: process.env.DB_USER,
     password: process.env.DB_PASS,
     database: process.env.DB_NAME,
-    connectionLimit: 10
 });
+
+const isNumber = (val) => /^[0-9]+$/.test(val);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// API search endpoint (FULLTEXT)
-app.get(`/api/search`, (req, res) => {
-    const keyword = req.query.q || '';
-    const lat = req.query.lat || '';
-    const long = req.query.long || '';
+app.get('/api/search', async (req, res) => {
+    try {
+        const keyword = (req.query.q || '').replace(/'/g, "");
+        const lat = req.query.lat;
+        const long = req.query.long;
 
-    //const kabupaten = req.query.kabupaten || '';
-    if (isNumber(keyword)) {
-        let sql = `
-            SELECT idsbr,nama_usaha,alamat_usaha,nama_kabupaten,latitude,longitude
-            FROM prelist_search
-            WHERE idsbr = ?
-            `
-            ;
-        if (lat != '' && long != '') {
+        const latNum = lat ? parseFloat(lat) : null;
+        const longNum = long ? parseFloat(long) : null;
+
+        const hasGeo = (
+            latNum !== null &&
+            longNum !== null &&
+            !isNaN(latNum) &&
+            !isNaN(longNum)
+        );
+
+        let sql = '';
+
+        // =========================
+        // CASE 1: ID NUMBER SEARCH
+        // =========================
+        if (isNumber(keyword)) {
+
             sql = `
-            SELECT idsbr,nama_usaha,alamat_usaha,nama_kabupaten,latitude,longitude,
-            (
-                6371 * ACOS(
-                COS(RADIANS(${lat})) *
-                COS(RADIANS(latitude)) *
-                COS(RADIANS(longitude) - RADIANS(${long})) +
-                SIN(RADIANS(${lat})) *
-                SIN(RADIANS(latitude))
-            )
-            ) AS distance
-            FROM prelist_search
-            WHERE idsbr = ?
-            `
-                ;
+                SELECT 
+                    idsbr,
+                    nama_usaha,
+                    alamat_usaha,
+                    nama_kabupaten,
+                    latitude,
+                    longitude
+                    ${hasGeo ? `,
+                    (
+                        6371 * acos(
+                            cos(radians(${latNum})) *
+                            cos(radians(latitude)) *
+                            cos(radians(longitude) - radians(${longNum})) +
+                            sin(radians(${latNum})) *
+                            sin(radians(latitude))
+                        )
+                    ) AS distance` : ''}
+                FROM prelist_search
+                WHERE idsbr = '${keyword}'
+                LIMIT 10
+            `;
+
+        } 
+        // =========================
+        // CASE 2: TEXT SEARCH
+        // =========================
+        else {
+
+            sql = `
+                SELECT 
+                    idsbr,
+                    nama_usaha,
+                    alamat_usaha,
+                    nama_kabupaten,
+                    latitude,
+                    longitude
+                    ${hasGeo ? `,
+                    (
+                        6371 * acos(
+                            cos(radians(${latNum})) *
+                            cos(radians(latitude)) *
+                            cos(radians(longitude) - radians(${longNum})) +
+                            sin(radians(${latNum})) *
+                            sin(radians(latitude))
+                        )
+                    ) AS distance` : ''}
+                    , position(lower(nama_usaha), lower('${keyword}')) AS score
+                FROM prelist_search
+                WHERE 1=1
+            `;
+
+            if (keyword) {
+                sql += ` AND lower(nama_usaha) LIKE '%${keyword.toLowerCase()}%'`;
+            }
+
+            if (hasGeo) {
+                sql += ` ORDER BY distance ASC, score ASC LIMIT 10`;
+            } else {
+                sql += ` ORDER BY score ASC LIMIT 10`;
+            }
         }
-        const params = [];
-        params.push(keyword);
-        sql += `LIMIT 10`;
-        db.query(sql, params, (err, results) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(results);
+
+        const result = await client.query({
+            query: sql,
+            format: 'JSONEachRow'
         });
 
-    } else {
-        let sql = `
-            SELECT idsbr,nama_usaha,alamat_usaha,nama_kabupaten,latitude,longitude,
-            ${keyword ? 'MATCH(nama_usaha) AGAINST(? IN NATURAL LANGUAGE MODE) AS score' : '0 AS score'}
-            FROM prelist_search
-            WHERE 1=1
-        `;
-        if (lat != '' && long != '') {
-            sql = `
-            SELECT idsbr,nama_usaha,alamat_usaha,nama_kabupaten,latitude,longitude,
-            (
-                6371 * ACOS(
-                COS(RADIANS(${lat})) *
-                COS(RADIANS(latitude)) *
-                COS(RADIANS(longitude) - RADIANS(${long})) +
-                SIN(RADIANS(${lat})) *
-                SIN(RADIANS(latitude))
-            )
-            ) AS distance,
-            ${keyword ? 'MATCH(nama_usaha) AGAINST(? IN NATURAL LANGUAGE MODE) AS score' : '0 AS score'}
-            FROM prelist_search
-            WHERE 1=1
-        `;
-        }
+        const data = await result.json();
+        res.json(data);
 
-        const params = [];
-
-        // FULLTEXT hanya kalau ada keyword
-        if (keyword) {
-            sql += ` AND MATCH(nama_usaha) AGAINST(? IN NATURAL LANGUAGE MODE)`;
-            params.push(keyword, keyword); // 2x karena dipakai di SELECT & WHERE
-        }
-
-        // Filter kabupaten
-        //if (kabupaten) {
-        //    sql += ` AND kode_kabupaten = ?`;
-        //    params.push(kabupaten);
-        //}
-
-        if (lat != '' && long != '') {
-            sql += ` ORDER BY distance ASC, score DESC LIMIT 10`;
-        }else{
-            sql += ` ORDER BY score DESC LIMIT 10`;
-        }
-
-
-        
-
-        db.query(sql, params, (err, results) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(results);
-        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-
 });
 
-// Serve frontend
-app.get(`/`, (req, res) => {
+// homepage
+app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+});
