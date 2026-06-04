@@ -62,7 +62,7 @@ app.get('/api/search', async (req, res) => {
                     ) AS distance` : ''}
                 FROM prelist_search
                 WHERE idsbr = '${keyword}'
-                LIMIT 10
+                LIMIT 15
             `;
 
         } 
@@ -99,9 +99,9 @@ app.get('/api/search', async (req, res) => {
             }
 
             if (hasGeo) {
-                sql += ` ORDER BY distance ASC, score ASC LIMIT 10`;
+                sql += ` ORDER BY distance ASC, score ASC LIMIT 15`;
             } else {
-                sql += ` ORDER BY score ASC LIMIT 10`;
+                sql += ` ORDER BY score ASC LIMIT 15`;
             }
         }
 
